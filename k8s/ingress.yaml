@@ -1,0 +1,30 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: poi-apps-ingress
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /cpu
+            pathType: Prefix
+            backend:
+              service:
+                name: poi-app-cpu-service
+                port:
+                  number: 8000
+          - path: /memory
+            pathType: Prefix
+            backend:
+              service:
+                name: poi-app-memory-service
+                port:
+                  number: 8000
+          - path: /io
+            pathType: Prefix
+            backend:
+              service:
+                name: poi-app-io-service
+                port:
+                  number: 8000

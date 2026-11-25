@@ -1,0 +1,119 @@
+# --- APLICAÇÃO 1: CPU-BOUND ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: poi-app-cpu
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: poi-app-cpu
+  template:
+    metadata:
+      labels:
+        app: poi-app-cpu
+    spec:
+      containers:
+        - name: poi-app-cpu
+          image: andretharssys/poi-app-cpu:latest
+          ports:
+            - containerPort: 8000
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: poi-app-cpu-service
+spec:
+  type: ClusterIP
+  selector:
+    app: poi-app-cpu
+  ports:
+    - port: 8000
+      targetPort: 8000
+---
+# --- APLICAÇÃO 2: MEMORY-BOUND ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: poi-app-memory
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: poi-app-memory
+  template:
+    metadata:
+      labels:
+        app: poi-app-memory
+    spec:
+      containers:
+        - name: poi-app-memory
+          image: andretharssys/poi-app-memory:latest
+          ports:
+            - containerPort: 8000
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "2Gi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: poi-app-memory-service
+spec:
+  type: ClusterIP
+  selector:
+    app: poi-app-memory
+  ports:
+    - port: 8000
+      targetPort: 8000
+---
+# --- APLICAÇÃO 3: IO-BOUND ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: poi-app-io
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: poi-app-io
+  template:
+    metadata:
+      labels:
+        app: poi-app-io
+    spec:
+      containers:
+        - name: poi-app-io
+          image: andretharssys/poi-app-io:latest
+          ports:
+            - containerPort: 8000
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: poi-app-io-service
+spec:
+  type: ClusterIP
+  selector:
+    app: poi-app-io
+  ports:
+    - port: 8000
+      targetPort: 8000
