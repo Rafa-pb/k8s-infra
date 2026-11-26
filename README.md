@@ -1,58 +1,59 @@
-# Infraestrutura Kubernetes — Atividade 5 (POI)
+# Infraestrutura Kubernetes: Atividade 5 (POI)
 
-**Disciplina:** Provisionamento e Otimização de Infraestrutura (POI) — UFCG / LSD  
-**Grupo:** Grupo 18  
+**Disciplina:** Provisionamento e Otimização de Infraestrutura (POI), UFCG / LSD
+**Grupo:** Grupo 18
 **Integrantes:**
-* [Nome Completo 1] — Matrícula: [000000000]
-* [Nome Completo 2] — Matrícula: [000000000]
-* [Nome Completo 3] — Matrícula: [000000000]
+* [Nome Completo 1] - [Matrícula: 000000000]
+* Heitor de Souza Alves - 123110811
+* [Nome Completo 3] - [Matrícula: 000000000]
 
 ---
 
-## 1. Visão Geral e Arquitetura
+## 1. Visão geral e arquitetura
 
-Este repositório contém os scripts de automação e manifestos Kubernetes utilizados para o deploy e exposição externa de três aplicações backend com distintos perfis computacionais (**CPU-bound**, **Memory-bound** e **I/O-bound**) em um cluster Kubernetes (**Minikube**) hospedado na nuvem privada **OpenStack** do LSD/UFCG.
+Este repositório contém o código das três aplicações (CPU-bound, Memory-bound e I/O-bound), os Dockerfiles, os manifestos Kubernetes e os scripts usados para executá-las em um cluster **Minikube** hospedado em uma VM da nuvem **OpenStack** do LSD/UFCG. As imagens são construídas a partir do código deste repositório, e não baixadas de registries externos.
 
-### Fluxo de Tráfego Externo
+### Fluxo de tráfego externo
 
-```text
-Cliente Externo
+```
+Cliente externo
       │
-      ▼  [http://150.165.85.77:8018/](http://150.165.85.77:8018/){cpu|memory|io}
+      ▼  http://150.165.85.77:8018/{cpu|memory|io}
 OpenStack Load Balancer (poi-atividades)
-      │  Pool: pool-app-grupo-18 (TCP :8018 -> 10.5.8.252:8018)
+      │  Listener TCP :8018 -> pool-app-grupo-18 -> 10.5.8.252:8018
       ▼
-VM OpenStack (vm-k8s-grupo-18 - 10.5.8.252)
-      │  Nginx Reverse Proxy (:8018 -> <minikube-ip>:80)
+VM OpenStack (vm-k8s-grupo-18, 10.5.8.252)
+      │  socat (serviço systemd): :8018 -> <minikube-ip>:30080
       ▼
-Kubernetes Ingress Controller (NGINX - rewrite-target: /$2)
-      ├── /cpu    ──► poi-app-cpu-service (ClusterIP :8000)    ──► Pods poi-app-cpu (2 réplicas)
-      ├── /memory ──► poi-app-memory-service (ClusterIP :8000) ──► Pods poi-app-memory (2 réplicas)
-      └── /io     ──► poi-app-io-service (ClusterIP :8000)     ──► Pods poi-app-io (2 réplicas)
+Service app-gateway (NodePort 30080)
+      │
+      ▼
+Pods app-gateway (nginx, 2 réplicas)
+      ├── /cpu    ──► Service app-cpu    (ClusterIP :8080) ──► Deployment app-cpu    (2 réplicas)
+      ├── /memory ──► Service app-memory (ClusterIP :8080) ──► Deployment app-memory (2 réplicas)
+      └── /io     ──► Service app-io     (ClusterIP :8080) ──► StatefulSet app-io    (2 réplicas, PVC 2Gi cada)
 ```
 
+Somente o gateway é exposto fora do cluster. Os três backends são acessíveis apenas por Services `ClusterIP`.
+
 ---
 
-## 2. Limpeza da Infraestrutura Anterior e Provisionamento na Nuvem OpenStack
+## 2. Infraestrutura na nuvem OpenStack
 
-### 2.1 Limpeza de Recursos Anteriores
-Antes de provisionar o ambiente do Kubernetes no projeto `provisionamento`, foram removidos os artefatos da atividade anterior pertencentes ao Grupo 18 para liberar cota computacional e manter o ambiente organizado:
-* **Snapshot removido:** `snap-vol-grupo-18`
-* **Volume removido:** `vol-grupo-18`
-* **Instância removida:** `vm-grupo-18` (IP antigo `10.5.11.53`)
+### 2.1 Limpeza de recursos anteriores
+Antes de criar o novo ambiente, foram removidos os recursos do Grupo 18 das atividades anteriores (VMs, volumes, snapshots e members de pool que apontavam para a VM antiga). Recursos de outros grupos e do professor não foram alterados.
 
-### 2.2 Criação da Nova Instância (`vm-k8s-grupo-18`)
-Para comportar o cluster Minikube e as réplicas das aplicações com folga de memória e processamento, foi criada uma nova instância na rede `provider`:
-* **Nome da VM:** `vm-k8s-grupo-18`
-* **Flavor:** `general.large` (4 vCPUs, 8 GB RAM)
+### 2.2 Criação da VM `vm-k8s-grupo-18`
+* **Flavor:** `general.large` (4 vCPUs, 8 GB de RAM)
 * **Imagem:** `ubuntu-24.04` LTS
 * **Keypair:** `grupo-18`
-* **Security Group:** `sg-grupo-18` (regras TCP de entrada liberadas para portas `22` e `8018`)
-* **IP Privado atribuído:** `10.5.8.252`
+* **Security group:** `sg-grupo-18`
+* **Rede:** `provider`
+* **IP privado:** `10.5.8.252`
 
-Comando executado via OpenStack CLI:
+A primeira VM foi criada com o flavor `general.medium` (IP `10.5.10.15`) e substituída por uma `general.large`, para atender o mínimo de 4 vCPUs e 8 GB de RAM.
 
-```bash
+```
 openstack server create \
   --flavor general.large \
   --image ubuntu-24.04 \
@@ -60,112 +61,160 @@ openstack server create \
   --security-group sg-grupo-18 \
   --network provider \
   --wait vm-k8s-grupo-18
+
+openstack server show vm-k8s-grupo-18 -c addresses
 ```
 
-### 2.3 Atualização do Acesso SSH no Load Balancer (`poi-atividades`)
-Como as instâncias da rede `provider` possuem apenas IPs internos, o acesso administrativo via SSH foi configurado no Load Balancer compartilhado `poi-atividades` (`150.165.85.77`):
-* **Listener SSH:** `listener-ssh-grupo18` (Porta externa `2218`, protocolo `TCP`)
-* **Pool SSH:** `8328d252-36c7-4124-84f9-846a98db4b42`
-* **Atualização de Member:** Remoção do IP antigo (`10.5.11.53`) e adição do membro `10.5.8.252` na porta `22`.
+### 2.3 Security group
+Além do SSH (22), foi liberada a porta TCP **8018**, usada pelo Load Balancer para alcançar a VM:
 
-> *[Inserir prints da criação da VM `vm-k8s-grupo-18`, regras do `sg-grupo-18` e atualização do pool SSH no Load Balancer]*
+```
+openstack security group rule create --proto tcp --dst-port 8018 --ingress sg-grupo-18
+```
 
----
+### 2.4 Acesso SSH pelo Load Balancer
+As VMs da rede `provider` possuem apenas IP interno. O acesso administrativo é feito pelo Load Balancer compartilhado `poi-atividades` (`150.165.85.77`):
 
-## 3. Instalação e Configuração do Cluster Kubernetes (Minikube)
+* **Listener:** `listener-ssh-grupo18`, TCP, porta externa `2218`
+* **Pool:** `8328d252-36c7-4124-84f9-846a98db4b42`
+* **Member:** `10.5.8.252:22`
 
-O script `scripts/deploy-k8s.sh` automatiza todo o provisionamento do cluster dentro da VM `vm-k8s-grupo-18`:
+```
+openstack loadbalancer member create \
+  --subnet-id 17de9c72-e5dc-4da0-ae0a-013f7e42400e \
+  --address 10.5.8.252 \
+  --protocol-port 22 \
+  --wait 8328d252-36c7-4124-84f9-846a98db4b42
 
-1. **Instalação do Container Runtime e Dependências:** Instalação do `docker.io`, `conntrack`, `curl` e `nginx`.
-2. **Instalação das Ferramentas Kubernetes:** Download e instalação dos binários oficiais do `kubectl` e `minikube`.
-3. **Inicialização do Cluster:**
-
-   ```bash
-   minikube start --driver=docker --cpus=4 --memory=7168m
-   ```
-
-   *(Foram alocados 4 vCPUs e 7168 MB de RAM para o nó do Minikube, reservando ~1 GB de RAM para o sistema operacional hospedeiro Ubuntu 24.04 e o proxy reverso Nginx, prevenindo falhas por falta de memória).*
-4. **Habilitação do Ingress Controller:**
-
-   ```bash
-   minikube addons enable ingress
-   ```
-
-> *[Inserir prints da execução do `minikube status`, `kubectl get nodes` e `kubectl get pods -A`]*
+ssh -i grupo-18.pem -p 2218 ubuntu@150.165.85.77
+```
 
 ---
 
-## 4. Deploy das Aplicações e Justificativa dos Workloads
+## 3. Instalação e configuração do cluster Kubernetes
 
-As três aplicações foram previamente conteinerizadas (FastAPI + Uvicorn na porta `8000`) e publicadas no Docker Hub:
-* **CPU-bound (`andretharssys/poi-app-cpu:latest`):** Executa `n` iterações matemáticas intensivas acumulando `i * i`.
-* **Memory-bound (`andretharssys/poi-app-memory:latest`):** Aloca e soma os elementos de uma matriz bidimensional `size x size` em memória RAM.
-* **I/O-bound (`andretharssys/poi-app-io:latest`):** Realiza `size` ciclos de escrita e leitura sequencial de blocos de 1 MB em disco temporário.
+Os scripts ficam em `scripts/`:
 
-### Justificativa das Escolhas de Objetos Kubernetes (`k8s/apps.yaml` e `k8s/ingress.yaml`)
-
-1. **`Deployment` (com `replicas: 2` para cada aplicação):**
-   * **Natureza Stateless:** As três aplicações processam requisições HTTP de forma independente, sem necessidade de manter estado persistente vinculado à identidade de rede ou armazenamento exclusivo de um pod específico (o que torna desnecessário o uso de `StatefulSet`).
-   * **Alta Disponibilidade e Auto-recuperação:** O controlador de `Deployment` garante que 2 réplicas de cada serviço permaneçam em execução, recriando automaticamente qualquer pod caso ocorra falha sob estresse.
-   * **Gerenciamento de Recursos (`requests` e `limits`):** Foram definidos limites explícitos de CPU e memória por container (destacando-se o limite de `2Gi` para `poi-app-memory`), evitando que um único pod consuma toda a memória do nó e cause *OOMKilled* em cascata.
-
-2. **`Service` do tipo `ClusterIP`:**
-   * Como o ponto de entrada único do cluster é gerenciado pelo `Ingress`, expor cada aplicação internamente via `ClusterIP` na porta `8000` fornece um endereço IP virtual estável e balanceamento de carga interno entre as réplicas de cada `Deployment`, sem abrir portas desnecessárias no nó.
-
-3. **`Ingress` (`nginx` com `rewrite-target`):**
-   * Permite rotear o tráfego HTTP de uma única porta de entrada para os três microsserviços distintos com base no caminho da URL (`/cpu`, `/memory` e `/io`).
-   * A anotação `nginx.ingress.kubernetes.io/rewrite-target: /$2` combinada com os caminhos `/cpu(/|$)(.*)`, `/memory(/|$)(.*)` e `/io(/|$)(.*)` remove o prefixo da rota antes de encaminhar a requisição ao container, garantindo compatibilidade com os endpoints raiz (`/`) implementados no FastAPI.
-
-> *[Inserir prints da aplicação dos manifestos (`kubectl apply -f k8s/`) e da saída de `kubectl get pods,svc,ingress`]*
+| Script | Função |
+|---|---|
+| `01-install.sh` | Instala Docker, kubectl, Minikube, socat e git e adiciona o usuário ao grupo `docker` |
+| `02-start-minikube.sh` | Cria o cluster com `minikube start --driver=docker --cpus=4 --memory=6144` |
+| `03-build-deploy.sh` | Constrói as 4 imagens com `minikube image build` e aplica os manifestos de `k8s/` |
+| `04-forward.sh` | Cria o serviço systemd com `socat`, encaminhando a porta 8018 da VM ao NodePort 30080 |
 
 ---
 
-## 5. Exposição Externa e Configuração do Load Balancer
+## 4. Deploy das aplicações e justificativa dos workloads
 
-### 5.1 Proxy Reverso na VM (`Nginx` na porta `8018`)
-Como o Minikube utiliza o driver `docker` em uma sub-rede isolada interna à VM, o IP do Ingress Controller não é diretamente alcançável pela rede externa `provider`. Para expor o cluster para o Load Balancer do OpenStack, o script `scripts/deploy-k8s.sh` configura o **Nginx** na VM `vm-k8s-grupo-18` escutando na porta `8018` e encaminhando todas as requisições para `http://$(minikube ip):80`.
+As imagens são construídas no próprio Minikube a partir do código do repositório (`services/`), com `imagePullPolicy: Never`:
 
-### 5.2 Configuração do Load Balancer `poi-atividades`
-No OpenStack, o pool da aplicação do Grupo 18 (`pool-app-grupo-18`, ID `73c59098-c01c-42a9-ab30-efcc02b74d5e`) foi atualizado para apontar para a nova VM na porta `8018`:
+* `app-cpu:1.0`: calcula a soma de `i * i` para `n` iterações (CPU-bound), `GET /cpu?n=`
+* `app-memory:1.0`: aloca e soma uma matriz `size x size` em RAM (memory-bound), `GET /memory?size=`
+* `app-io:1.0`: executa ciclos de escrita com `fsync` e leitura de blocos de 1 MB em disco (I/O-bound), `GET /io?size=`
+* `app-gateway:1.0`: nginx que roteia `/cpu`, `/memory` e `/io` para os Services internos
 
-```bash
-# Remoção do membro da atividade anterior (10.5.11.53:8080)
-openstack loadbalancer member delete pool-app-grupo-18 909191dc-bc55-4edb-9745-0ac72399b964
+### 4.1 Objetos Kubernetes e justificativas (`k8s/`)
 
-# Adição da VM do cluster Kubernetes (10.5.8.252:8018)
+| Aplicação | Objeto | Réplicas | requests | limits |
+|---|---|---|---|---|
+| app-cpu | Deployment | 2 | 250m / 64Mi | 1 CPU / 256Mi |
+| app-memory | Deployment | 2 | 100m / 256Mi | 500m / 1Gi |
+| app-io | StatefulSet + PVC | 2 | 100m / 128Mi | 500m / 512Mi |
+| app-gateway | Deployment | 2 | 50m / 32Mi | 200m / 128Mi |
+
+1. **`Deployment` para `app-cpu` e `app-memory`.** As duas aplicações não dependem de estado persistente: cada requisição é independente e os logs em `/data` são auxiliares (volume `emptyDir`). O Deployment fornece self-healing, rolling update e escala simples, e as 2 réplicas dão disponibilidade caso um pod seja recriado.
+
+2. **`StatefulSet` com `volumeClaimTemplates` para `app-io`.** É a aplicação que grava dados em disco de forma relevante (arquivos de 1 MB com `fsync` e logs). Cada réplica recebe seu próprio PVC de 2Gi (`data-app-io-0`, `data-app-io-1`) e uma identidade estável (`app-io-0`, `app-io-1`). Assim, os logs e o volume sobrevivem a reinícios do pod e não se misturam entre réplicas. O Service headless `app-io-headless` dá o nome DNS estável a cada pod.
+
+3. **`requests` e `limits` em todos os containers.** O limite de memória do `app-memory` (1Gi) faz com que um `size` muito grande cause apenas o OOMKill do pod, e não do nó. O `app-cpu` tem teto de 1 CPU, que é o máximo aproveitável por um processo Python limitado pelo GIL.
+
+4. **Probes de readiness e liveness com `timeoutSeconds` e `failureThreshold` folgados.** Requisições pesadas (CPU, memória e I/O com `fsync`) podem bloquear o pod por bastante tempo. Probes agressivas fariam o Kubernetes matar pods saudáveis durante a carga.
+
+5. **Services `ClusterIP` para os backends e `NodePort` (30080) só para o gateway.** Uma única porta de entrada simplifica o Load Balancer e evita abrir portas desnecessárias. Os nomes `app-cpu`, `app-memory` e `app-io` são usados pelo `nginx.conf` do gateway.
+
+6. **Gateway nginx como Deployment.** Faz o roteamento por caminho (`/cpu`, `/memory`, `/io`) com o `nginx.conf` versionado em `services/gateway/`, e responde `online` na raiz `/` (usada também como readiness probe). O `proxy_read_timeout` de 300 s sustenta requisições longas.
+
+---
+
+## 5. Exposição externa e Load Balancer
+
+### 5.1 Encaminhamento na VM (`socat` + systemd)
+Com o driver `docker`, o IP do Minikube (`minikube ip`, ex.: `192.168.49.2`) só é alcançável de dentro da VM. O script `scripts/04-forward.sh` cria o serviço `minikube-fwd`, que escuta na porta **8018** da VM e encaminha para `<minikube-ip>:30080`:
+
+```
+sudo systemctl status minikube-fwd --no-pager
+sudo ss -tlnp | grep 8018
+curl "http://localhost:8018/"
+```
+
+### 5.2 Load Balancer `poi-atividades`
+O pool da aplicação do Grupo 18 (`pool-app-grupo-18`) aponta para a VM na porta 8018:
+
+```
 openstack loadbalancer member create \
   --subnet-id 17de9c72-e5dc-4da0-ae0a-013f7e42400e \
   --address 10.5.8.252 \
   --protocol-port 8018 \
   --wait pool-app-grupo-18
+
+openstack loadbalancer member list pool-app-grupo-18
 ```
 
-### 5.3 Validação Remota
-Com o membro ativo (`ACTIVE` / `ONLINE`) no Load Balancer `poi-atividades` (`150.165.85.77`), o acesso externo às três aplicações foi validado remotamente:
+O member deve ficar com `operating_status: ONLINE` após o health check.
 
-```bash
-# Teste CPU-bound
-curl "[http://150.165.85.77:8018/cpu?n=3000000](http://150.165.85.77:8018/cpu?n=3000000)"
+### 5.3 Validação remota
 
-# Teste Memory-bound
-curl "[http://150.165.85.77:8018/memory?size=1500](http://150.165.85.77:8018/memory?size=1500)"
-
-# Teste I/O-bound
-curl "[http://150.165.85.77:8018/io?size=20](http://150.165.85.77:8018/io?size=20)"
+```
+curl "http://150.165.85.77:8018/"
+curl "http://150.165.85.77:8018/cpu?n=20000000"
+curl "http://150.165.85.77:8018/memory?size=1000"
+curl "http://150.165.85.77:8018/io?size=10"
 ```
 
-> *[Inserir prints do `openstack loadbalancer member list pool-app-grupo-18` e das respostas JSON retornadas pelos três comandos `curl` externos]*
+Respostas esperadas: `online`, e JSON com `"type": "CPU-bound"`, `"memory-bound"` e `"I/O-bound"`.
+
+### 5.4 Evidências adicionais
+
+```
+kubectl get pods,svc,pvc -o wide
+kubectl exec app-io-0 -- tail -n 5 /data/logs/io.log
+
+# self-healing: apagar os pods do cpu e acompanhar a recriação
+kubectl delete pod -l app=app-cpu --wait=false
+kubectl get pods -w
+```
 
 ---
 
-## 6. Estrutura do Repositório
+## 6. Limitações conhecidas e melhorias futuras
 
-```text
-k8s-infra/
-├── README.md               # Documentação completa da infraestrutura, deploy e validação
+* O `socat` guarda o IP do Minikube no arquivo do serviço. Se o IP mudar, é preciso rodar `04-forward.sh` novamente.
+* Após reiniciar a VM, o Minikube precisa de `minikube start` manual, e o `minikube-fwd` só funciona depois disso.
+* O gateway nginx faz o papel de um Ingress. Uma evolução natural é usar o recurso nativo `Ingress` com o addon do Minikube.
+* O StatefulSet do I/O usa o storage class `standard` do Minikube (hostPath), adequado a um ambiente de laboratório, não de produção.
+
+---
+
+## 7. Estrutura do repositório
+
+```
+.
+├── services/
+│   ├── cpu/        # server.py + Dockerfile
+│   ├── memory/     # server.py + Dockerfile
+│   ├── io/         # server.py + Dockerfile
+│   └── gateway/    # nginx.conf + Dockerfile
 ├── k8s/
-│   ├── apps.yaml           # Deployments (2 réplicas) e Services (ClusterIP) das 3 aplicações
-│   └── ingress.yaml        # Regras de roteamento L7 (/cpu, /memory, /io) com rewrite-target
-└── scripts/
-    └── deploy-k8s.sh       # Automação de instalação (Docker, kubectl, Minikube, Nginx) e deploy
+│   ├── cpu.yaml        # Deployment + Service
+│   ├── memory.yaml     # Deployment + Service
+│   ├── io.yaml         # StatefulSet + PVCs + Services (ClusterIP e headless)
+│   └── gateway.yaml    # Deployment + Service NodePort 30080
+├── scripts/
+│   ├── 01-install.sh
+│   ├── 02-start-minikube.sh
+│   ├── 03-build-deploy.sh
+│   └── 04-forward.sh
+├── openstack/      # comandos do Load Balancer e do security group
+├── docs/           # documentação e prints
+└── requirements.txt
 ```

@@ -1,0 +1,56 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-io-headless
+spec:
+  clusterIP: None
+  selector: { app: app-io }
+  ports: [{ port: 8080 }]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-io
+spec:
+  selector: { app: app-io }
+  ports: [{ port: 8080, targetPort: 8080 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: app-io
+spec:
+  serviceName: app-io-headless
+  replicas: 2
+  selector:
+    matchLabels: { app: app-io }
+  template:
+    metadata:
+      labels: { app: app-io }
+    spec:
+      containers:
+      - name: app
+        image: app-io:1.0
+        imagePullPolicy: Never
+        ports: [{ containerPort: 8080 }]
+        resources:
+          requests: { cpu: 100m, memory: 128Mi }
+          limits:   { cpu: 500m, memory: 512Mi }
+        readinessProbe:
+          httpGet: { path: /, port: 8080 }
+          initialDelaySeconds: 3
+          timeoutSeconds: 5
+          failureThreshold: 6
+        livenessProbe:
+          httpGet: { path: /, port: 8080 }
+          initialDelaySeconds: 10
+          timeoutSeconds: 10
+          failureThreshold: 12
+        volumeMounts: [{ name: data, mountPath: /data }]
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: [ReadWriteOnce]
+      resources:
+        requests: { storage: 2Gi }
